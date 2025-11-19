@@ -8,7 +8,6 @@ from torch import nn
 import numpy as np
 import torchvision.transforms as transforms
 from torch.utils.tensorboard import SummaryWriter
-from matplotlib import pyplot as plt
 from typing import Union
 
 warnings.filterwarnings("ignore")
@@ -88,7 +87,8 @@ class Actor(nn.Module):
         h = h + torch.randn_like(h) * sigma
 
         steer = h[:, 0]
-        gas = (h[:, 1] + 1) * 0.5 + 0.1
+        # gas = (h[:, 1] + 1) * 0.5 + 0.1
+        gas = (h[:, 1] + 1) * 0.4 + 0.05
         brake = (h[:, 2] + 1) * 0.015
 
         turn_magnitude = torch.abs(steer)
@@ -205,9 +205,7 @@ class ReplayBuffer:
 
 
 class Agent:
-    ### MODIFICATION START: Different learning rates for Actor and Critic ###
     def __init__(self, state_dim: int, action_dim: int, actor_lr: float, critic_lr: float, device="cpu") -> None:
-        ### MODIFICATION END ###
         self.brake_rate = 0
         self.turn_speed_reduction = 0.0
         self.device = device
@@ -222,11 +220,9 @@ class Agent:
         self.target_critic2 = Critic(state_dim, action_dim).to(device)
         self.target_critic2.load_state_dict(self.critic2.state_dict())
 
-        ### MODIFICATION START: Use separate learning rates ###
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=critic_lr)
         self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=critic_lr)
-        ### MODIFICATION END ###
 
         self.critic_mse_loss = nn.MSELoss().to(device)
 
@@ -285,10 +281,8 @@ class Agent:
         torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
         self.critic2_optimizer.step()
 
-        ### MODIFICATION START: Use actor_update_freq parameter ###
         actor_update_freq = 2  # Default TD3 delay
         if update_time % actor_update_freq == 0:
-            ### MODIFICATION END ###
             predicted_action = self.actor(
                 state,
                 brake_rate=self.brake_rate,
@@ -309,30 +303,40 @@ class Agent:
                     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
 
-### MODIFICATION START: Simplified reward function for early training ###
-def car_in_road_reward_simplified(image):
-    """Simplified reward: just checks if the car is on the road using a central region."""
-    part_image = image[60:84, 40:60, :]  # Region right under the car
+### MODIFICATION: Reverted to the original aggressive reward function from the source version.
+def car_in_road_reward(image):
+    """
+    Original aggressive reward function from the source version.
+    It calculates a score based on the ratio of green and gray pixels near the car.
+    The reward is heavily amplified to create a strong penalty for being off-road.
+    """
+    # This is the small region of interest right under the car's nose.
+    part_image = image[60:84, 40:60, :]
+
+    # Define color ranges for road (gray) and grass (green) in RGB.
     road_color_lower = np.array([90, 90, 90], dtype=np.uint8)
     road_color_upper = np.array([120, 120, 120], dtype=np.uint8)
     grass_color_lower = np.array([90, 180, 90], dtype=np.uint8)
     grass_color_upper = np.array([120, 255, 120], dtype=np.uint8)
 
+    # Create masks to find pixels within the defined color ranges.
     road_mask = cv2.inRange(part_image, road_color_lower, road_color_upper)
     grass_mask = cv2.inRange(part_image, grass_color_lower, grass_color_upper)
 
+    # Count the number of road and grass pixels.
     road_pixel_count = cv2.countNonZero(road_mask)
     grass_pixel_count = cv2.countNonZero(grass_mask)
 
     if road_pixel_count + grass_pixel_count == 0:
-        return -0.1  # Small penalty if we can't see road or grass
+        return 0  # Return neutral reward if nothing is detected.
 
-    # Reward is proportional to road pixels, becomes a penalty if mostly grass
+    # Calculate reward: proportional to road pixels, becomes negative if grass is dominant.
     reward = (road_pixel_count) / (road_pixel_count + grass_pixel_count) - 0.5
-    return reward
 
+    # The key change: amplify the reward/penalty by a factor of 6.
+    # A small negative value like -0.1 becomes a strong penalty of -0.6.
+    return reward * 10
 
-### MODIFICATION END ###
 
 def detect_curve_direction(image):
     height, width = image.shape[:2]
@@ -358,26 +362,25 @@ if __name__ == "__main__":
     print(f"使用设备: {device}")
     torch.autograd.set_detect_anomaly(False)
 
+    ### MODIFICATION: Use 'CarRacing-v2' to be consistent with the source version's environment
     env = gym.make('CarRacing-v3', render_mode="human")
+
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
-    ### MODIFICATION START: Adjusted hyperparameters ###
-    actor_lr = 2e-5  # Slower learning for actor
-    critic_lr = 7e-5  # Faster learning for critic
+    ### Hyperparameters from the optimized version ###
+    actor_lr = 2e-5
+    critic_lr = 7e-5
     gamma = 0.99
-    batch_size = 128
+    batch_size = 196
     max_epoch = 30000
-    # Exploration parameters for exponential decay
-    initial_sigma = 0.4
+    initial_sigma = 0.5
     final_sigma = 0.05
-    sigma_decay_rate = 0.997  # Slower decay
+    sigma_decay_rate = 0.997
     current_sigma = initial_sigma
-    ### MODIFICATION END ###
-
     max_step_per_epoch = 1000
-    replay_capacity = 5000  # Increased capacity
-    tau = 0.005  # Using a fixed small tau is often more stable
+    replay_capacity = 5000
+    tau = 0.005
 
     agent = Agent(state_dim, action_dim, actor_lr, critic_lr, device)
     replay_buffer = ReplayBuffer(replay_capacity)
@@ -385,9 +388,8 @@ if __name__ == "__main__":
     writer = SummaryWriter('./data_optimized')
     total_steps = 0
 
-    ### MODIFICATION START: Smoothing for curve detection ###
     recent_curve_intensities = deque(maxlen=5)
-    ### MODIFICATION END ###
+    max_rew=0;
 
     for epoch in range(max_epoch):
         try:
@@ -395,29 +397,29 @@ if __name__ == "__main__":
             state = transformer(observation)
             episode_reward = 0
             continue_negative_reward_time = 0
+
+            ### MODIFICATION: Added the specific off-road counter from the source version ###
             continue_out_of_road_time = 0
+
             update_time = 0
             episode_steps = 0
 
-            ### MODIFICATION START: Update exploration noise sigma ###
-            current_sigma = max(final_sigma, current_sigma * sigma_decay_rate)
+            if epoch > 200:
+                current_sigma = max(final_sigma, current_sigma * sigma_decay_rate)
+
             writer.add_scalar('training/sigma', current_sigma, epoch)
-            ### MODIFICATION END ###
 
             for step in range(max_step_per_epoch):
-                ### MODIFICATION START: Curriculum Learning Logic ###
-                # Phase 1: Basic driving (Epoch 0-499)
-                if epoch < 500:
-                    agent.turn_speed_reduction = 0.0  # No auto-braking in curves
-                # Phase 3: Advanced curve handling (Epoch 1500+)
-                elif epoch >= 1500 and step > 5:
+                # Curriculum learning logic remains the same
+                if epoch < 200:
+                    agent.turn_speed_reduction = 0.1
+                elif epoch >= 500 and step > 5:
                     raw_curve_intensity = detect_curve_direction(observation)
                     recent_curve_intensities.append(raw_curve_intensity)
                     curve_intensity = np.mean(recent_curve_intensities) if recent_curve_intensities else 0.0
                     agent.turn_speed_reduction = curve_speed_control(curve_intensity)
-                else:  # Phase 2 (500-1499)
-                    agent.turn_speed_reduction = 0.0
-                ### MODIFICATION END ###
+                else:
+                    agent.turn_speed_reduction = 0.3
 
                 action = agent.select_action(state, sigma=current_sigma)
                 next_state_image, reward, terminated, truncated, info = env.step(action)
@@ -427,22 +429,26 @@ if __name__ == "__main__":
                 episode_reward += reward
                 if reward < -0.1:
                     continue_negative_reward_time += 1
-
-
-                ### MODIFICATION START: Phased Reward Shaping ###
-                # Phase 1: No extra reward, just env reward
-                custom_reward = 0
-                if epoch >= 500:  # Phase 2 and 3
-                    in_road_reward = car_in_road_reward_simplified(next_state_image)
-                    custom_reward = in_road_reward * 0.5  # Apply with a fixed weight
-
-                reward += custom_reward
-
-                if custom_reward < -0.1:
-                    continue_out_of_road_time += 1
                 else:
-                    continue_out_of_road_time = 0
-                ### MODIFICATION END ###
+                    continue_negative_reward_time = 0
+
+                ### MODIFICATION: Applying reward and counter logic from the source version ###
+                # This logic is applied after the first few steps (e.g., 30) to stabilize the start.
+                if step > 30:
+                    # Use the new aggressive reward function
+                    in_road_reward = car_in_road_reward(next_state_image)
+
+                    # Clip the positive reward, but keep the full penalty
+                    final_custom_reward = min(0.01, in_road_reward)
+
+                    # Update the off-road counter
+                    if final_custom_reward < 0:
+                        continue_out_of_road_time += 1
+                    else:
+                        continue_out_of_road_time = 0
+
+                    # Add the custom penalty to the main reward
+                    reward += final_custom_reward
 
                 replay_buffer.add(state, action, next_state, reward, done)
                 if len(replay_buffer) > batch_size:
@@ -459,7 +465,8 @@ if __name__ == "__main__":
                 total_steps += 1
                 episode_steps += 1
 
-                if done or continue_negative_reward_time > 40:
+                ### MODIFICATION: Added the fast termination condition from the source version ###
+                if done or continue_negative_reward_time > 40 or continue_out_of_road_time > 10:
                     break
 
             writer.add_scalar('episode/reward', episode_reward, epoch)
@@ -472,6 +479,9 @@ if __name__ == "__main__":
             if epoch % 100 == 0 and epoch > 0:
                 torch.save(agent.actor.state_dict(), f"./model/agent_opt_{epoch}.pt")
                 print(f"Epoch {epoch}: Model saved.")
+            if max_rew<episode_reward:
+                max_rew = episode_reward
+                print( f"MAX RW Epoch {epoch}: MAX Reward = {episode_reward:.2f}, Steps = {episode_steps}, Sigma = {current_sigma:.3f}")
 
         except Exception as e:
             print(f"Epoch {epoch} 发生错误: {e}")
