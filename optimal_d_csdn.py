@@ -240,7 +240,10 @@ class SkipFrame(gym.Wrapper):
     def __init__(self, env, skip: int = 5):
         super().__init__(env)
         self.skip = skip
-
+    def judge_out_of_route(self, obs):
+        s = obs[:84, 6:90, :]
+        out_sum = (s[75, 35:48, 1][:2] > 200).sum() + (s[75, 35:48, 1][-2:] > 200).sum()
+        return out_sum == 4
     def step(self, action):
         total_reward = 0.0
         obs = None
@@ -249,6 +252,8 @@ class SkipFrame(gym.Wrapper):
         info = {}
         for _ in range(self.skip):
             obs, reward, terminated, truncated, info = self.env.step(action)
+            out_done = self.judge_out_of_route(obs)
+            reward = -1 if out_done else reward
             total_reward += reward
             if terminated or truncated:
                 break
@@ -599,8 +604,6 @@ def record_eval_video(run_name: str, episode: int, agent, device: str,
         f"已保存到 {video_dir}"
     )
 
-
-
 def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     """
     单次完整训练：
@@ -697,14 +700,11 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
 
                 action = agent.select_action(state, sigma=current_sigma)
                 next_obs, reward, terminated, truncated, info = env.step(action)
-
                 next_frame = transformer(next_obs)
                 frame_stack.append(next_frame)
                 next_state = torch.cat(list(frame_stack), dim=0)
 
                 done = terminated or truncated
-
-                # 使用环境原始 reward
                 episode_reward += reward
 
                 # 存入经验回放
