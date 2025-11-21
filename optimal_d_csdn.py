@@ -275,7 +275,22 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity)
 
     def add(self, state, action, next_state, reward, done):
-        experience = (state, action, next_state, reward, done)
+        """
+        state / next_state: torch.Tensor, shape = (4, 84, 84), float32, [0,1]
+        action: np.ndarray 或 list
+        reward: float
+        done: bool
+        """
+        # 状态：压缩为 uint8，范围 0~255
+        state_np = (state.cpu().numpy() * 255).astype(np.uint8)
+        next_state_np = (next_state.cpu().numpy() * 255).astype(np.uint8)
+
+        # 动作 / 奖励 / done 用紧凑 dtype 存起来
+        action_np = np.array(action, dtype=np.float32)
+        reward_np = np.array(reward, dtype=np.float32)
+        done_np = np.array(done, dtype=np.bool_)
+
+        experience = (state_np, action_np, next_state_np, reward_np, done_np)
         self.buffer.append(experience)
 
     def sample(self, batch_size):
@@ -283,11 +298,17 @@ class ReplayBuffer:
             return None
         batch = random.sample(self.buffer, batch_size)
         state, action, next_state, reward, done = map(np.stack, zip(*batch))
-        return (torch.FloatTensor(state),
-                torch.FloatTensor(action),
-                torch.FloatTensor(next_state),
-                torch.FloatTensor(reward),
-                torch.FloatTensor(done))
+
+        # 状态从 uint8 -> float32 -> [0,1]
+        state = torch.from_numpy(state.astype(np.float32) / 255.0)
+        next_state = torch.from_numpy(next_state.astype(np.float32) / 255.0)
+
+        # 其它照旧
+        action = torch.from_numpy(action.astype(np.float32))
+        reward = torch.from_numpy(reward.astype(np.float32))
+        done = torch.from_numpy(done.astype(np.float32))
+
+        return state, action, next_state, reward, done
 
     def __len__(self):
         return len(self.buffer)
@@ -625,10 +646,10 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     critic_lr = 1e-3
     gamma = 0.99
     batch_size = 128
-    num_episodes = 15000
+    num_episodes = 1500
     max_episode_steps = 1200
 
-    replay_capacity = 102400   # 经验回放容量 ~1e5
+    replay_capacity = 65536   # 经验回放容量 ~1e5
     tau = 0.05                 # target 网络软更新系数
 
     # 探索噪声：expl_noise = 0.5, expl_noise_exp_reduce_factor = 1 - 1e-4
