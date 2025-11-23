@@ -144,12 +144,10 @@ class Actor(nn.Module):
         h = h + torch.randn_like(h) * sigma
 
         steer = h[:, 0]
-        gas = (h[:, 1] + 1) * 0.5 + 0.1
-        brake = (h[:, 2] + 1) * 0.015
+        gas = (h[:, 1] + 1) * 0.5 + 0.05
+        brake = (h[:, 2] + 1) * 0.02
 
         turn_magnitude = torch.abs(steer)
-        gas_reduction = turn_magnitude * turn_speed_reduction
-        gas = gas * (1.0 - gas_reduction)
         sharp_turn_mask = (turn_magnitude > 0.5).float()
         brake = brake + sharp_turn_mask * turn_magnitude * 0.1
 
@@ -253,7 +251,7 @@ class SkipFrame(gym.Wrapper):
         for _ in range(self.skip):
             obs, reward, terminated, truncated, info = self.env.step(action)
             out_done = self.judge_out_of_route(obs)
-            reward = -1 if out_done else reward
+            reward = -0.1 if out_done else reward
             total_reward += reward
             if terminated or truncated:
                 break
@@ -267,7 +265,7 @@ def make_car_env(render_mode=None):
     - 灰度图 GrayscaleObservation
     - 缩放为 84x84 ResizeObservation
     """
-    env = gym.make("CarRacing-v3", render_mode=render_mode)
+    env = gym.make("CarRacing-v3", render_mode="human")
     env = SkipFrame(env, skip=5)                        # 对应参考代码的 skip=5
     env = GrayscaleObservation(env, keep_dim=False)     # 变成 (H, W) 灰度
     env = ResizeObservation(env, shape=(IMG_SIZE, IMG_SIZE))  # 变成 (84, 84)
@@ -632,7 +630,7 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     torch.manual_seed(seed)
 
     # 使用预处理后的 CarRacing 环境：跳帧 + 灰度 + 84x84
-    env = make_car_env(render_mode=None)
+    env = make_car_env(render_mode="human")
     try:
         env.reset(seed=seed)
     except TypeError:
