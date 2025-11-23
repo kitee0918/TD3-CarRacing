@@ -15,13 +15,12 @@ from typing import Union
 from gymnasium.wrappers import RecordVideo
 from gymnasium.wrappers import GrayscaleObservation, ResizeObservation, RecordVideo
 
-FRAME_STACK = 4  # 堆叠 4 帧
-IMG_SIZE = 84  # 将图像缩放到 84x84
+FRAME_STACK = 4   # 堆叠 4 帧
+IMG_SIZE = 84     # 将图像缩放到 84x84
 
 warnings.filterwarnings("ignore")
 # ===== 多实验 & CSV 日志配置 =====
 LOG_CSV_PATH = os.path.join("runs", "experiment_log.csv")  # 全局实验总表
-
 
 def append_experiment_log(row: dict):
     """
@@ -33,7 +32,7 @@ def append_experiment_log(row: dict):
         "run_name",
         "seed",
         "episode",
-        "is_final",  # 0=中间模型, 1=最终模型
+        "is_final",            # 0=中间模型, 1=最终模型
         "model_path",
         "episode_reward",
         "best_reward_so_far",
@@ -70,7 +69,6 @@ def append_experiment_log(row: dict):
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
-
 
 def setup_device():
     if torch.cuda.is_available():
@@ -144,12 +142,10 @@ class Actor(nn.Module):
         h = h + torch.randn_like(h) * sigma
 
         steer = h[:, 0]
-        gas = (h[:, 1] + 1) * 0.5 + 0.1
-        brake = (h[:, 2] + 1) * 0.015
+        gas = (h[:, 1] + 1) * 0.5 + 0.05
+        brake = (h[:, 2] + 1) * 0.02
 
         turn_magnitude = torch.abs(steer)
-        gas_reduction = turn_magnitude * turn_speed_reduction
-        gas = gas * (1.0 - gas_reduction)
         sharp_turn_mask = (turn_magnitude > 0.5).float()
         brake = brake + sharp_turn_mask * turn_magnitude * 0.1
 
@@ -235,20 +231,17 @@ class Critic(nn.Module):
         h = self.concat_linear(torch.cat((state_h, action_h), dim=1))
         return h
 
-
 class SkipFrame(gym.Wrapper):
-    # 简单的跳帧封装：同一动作重复 skip 次，奖励累加
+    """简单的跳帧封装：同一动作重复 skip 次，奖励累加。"""
     def __init__(self, env, skip: int = 5):
         super().__init__(env)
         self.skip = skip
-
     def judge_out_of_route(self, obs):
         s = obs[:84, 6:90, :]
         s_copy = s.copy()
         s_copy[75, [41, 42, 52, 53], :] = [255, 0, 0]
         out_sum = (s[75, 35:48, 1][:2] > 200).sum() + (s[75, 35:48, 1][-2:] > 200).sum()
         return out_sum == 4
-
     def step(self, action):
         total_reward = 0.0
         obs = None
@@ -258,7 +251,7 @@ class SkipFrame(gym.Wrapper):
         for _ in range(self.skip):
             obs, reward, terminated, truncated, info = self.env.step(action)
             out_done = self.judge_out_of_route(obs)
-            reward = -1 if out_done else reward
+            reward = -0.1 if out_done else reward
             total_reward += reward
             if terminated or truncated:
                 break
@@ -454,8 +447,8 @@ def detect_curve_direction(image):
         )
         return curve_intensity
 
-    near_roi = image[height // 2:, :, :]  # 近处（当前车前路面）：下半部分
-    far_roi = image[:height // 2:, :]  # 远处弯道：上半部分
+    near_roi = image[height  // 2:, :, :]# 近处（当前车前路面）：下半部分
+    far_roi = image[:height  // 2 :, :] # 远处弯道：上半部分
     near_curve = curve_intensity_from_roi(near_roi)
     far_curve = curve_intensity_from_roi(far_roi)
 
@@ -468,7 +461,9 @@ def curve_speed_control(curve_intensity, current_speed_factor=1.0):
     return speed_adjustment
 
 def render_one_episode(agent, transformer, max_episode_steps=1200):
-    # 用当前 agent 跑一局可视化（render_mode='human'），不训练，只看效果。
+    """
+    用当前 agent 跑一局可视化（render_mode='human'），不训练，只看效果。
+    """
     import gymnasium as gym
 
     env_vis = gym.make('CarRacing-v3', render_mode="human")
@@ -490,7 +485,6 @@ def render_one_episode(agent, transformer, max_episode_steps=1200):
     print(f"[Render] 可视化 episode_reward = {episode_reward:.2f}, steps = {steps}")
     env_vis.close()
 
-
 def record_video_episode(agent, transformer, episode_idx: int,
                          max_episode_steps: int = 1200,
                          video_folder: str = "videos"):
@@ -505,7 +499,7 @@ def record_video_episode(agent, transformer, episode_idx: int,
     env_vis = RecordVideo(
         env_vis,
         video_folder=video_folder,
-        episode_trigger=lambda ep: True,  # 我们只跑一局，录这一局即可
+        episode_trigger=lambda ep: True,           # 我们只跑一局，录这一局即可
         name_prefix=f"car_td3_ep_{episode_idx:06d}"
     )
 
@@ -528,7 +522,6 @@ def record_video_episode(agent, transformer, episode_idx: int,
     env_vis.close()
     print(f"[RecordVideo] episode {episode_idx}: reward={episode_reward:.2f}, "
           f"steps={steps}, saved to '{video_folder}'")
-
 
 def record_eval_video(run_name: str, episode: int, agent, device: str,
                       max_episode_steps: int = 1000):
@@ -578,7 +571,6 @@ def record_eval_video(run_name: str, episode: int, agent, device: str,
         f"已保存到 {video_dir}"
     )
 
-
 def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     """
     单次完整训练：
@@ -626,8 +618,8 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     num_episodes = 1500
     max_episode_steps = 1200
 
-    replay_capacity = 65536  # 经验回放容量 ~1e5
-    tau = 0.05  # target 网络软更新系数
+    replay_capacity = 65536   # 经验回放容量 ~1e5
+    tau = 0.05                 # target 网络软更新系数
 
     # 探索噪声：expl_noise = 0.5, expl_noise_exp_reduce_factor = 1 - 1e-4
     initial_sigma = 0.5
@@ -798,7 +790,6 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     env.close()
     writer.close()
 
-
 if __name__ == "__main__":
     device = setup_device()
     print(f"使用设备: {device}")
@@ -808,9 +799,9 @@ if __name__ == "__main__":
     sigma_decay_list = [
         1.0 - 1e-2,  # 0.990  衰减很快
         1.0 - 5e-3,  # 0.995
-        1.0 - 1e-3,  # 0.9990  衰减快
-        1.0 - 5e-4,  # 0.9995
-        1.0 - 1e-4,  # 0.9999  参考工程的默认值
+        1.0 - 1e-3,   # 0.9990  衰减快
+        1.0 - 5e-4,   # 0.9995
+        1.0 - 1e-4,   # 0.9999  参考工程的默认值
         # 1.0 - 5e-5,   # 0.99995
         # 1.0 - 1e-5,   # 0.99999 衰减非常慢
     ]
