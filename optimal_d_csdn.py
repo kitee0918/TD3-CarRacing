@@ -15,12 +15,13 @@ from typing import Union
 from gymnasium.wrappers import RecordVideo
 from gymnasium.wrappers import GrayscaleObservation, ResizeObservation, RecordVideo
 
-FRAME_STACK = 4   # 堆叠 4 帧
-IMG_SIZE = 84     # 将图像缩放到 84x84
+FRAME_STACK = 4  # 堆叠 4 帧
+IMG_SIZE = 84  # 将图像缩放到 84x84
 
 warnings.filterwarnings("ignore")
 # ===== 多实验 & CSV 日志配置 =====
 LOG_CSV_PATH = os.path.join("runs", "experiment_log.csv")  # 全局实验总表
+
 
 def append_experiment_log(row: dict):
     """
@@ -32,7 +33,7 @@ def append_experiment_log(row: dict):
         "run_name",
         "seed",
         "episode",
-        "is_final",            # 0=中间模型, 1=最终模型
+        "is_final",  # 0=中间模型, 1=最终模型
         "model_path",
         "episode_reward",
         "best_reward_so_far",
@@ -70,6 +71,7 @@ def append_experiment_log(row: dict):
             writer.writeheader()
         writer.writerow(row)
 
+
 def setup_device():
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -79,7 +81,6 @@ def setup_device():
         device = torch.device("cpu")
         print("❌ 使用 CPU (GPU 不可用)")
     return device
-
 
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim) -> None:
@@ -93,7 +94,6 @@ class Actor(nn.Module):
             nn.Mish(),
         )
         self.down1 = nn.MaxPool2d(kernel_size=2)
-
         self.conv2 = nn.Sequential(
             nn.Conv2d(16, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
@@ -235,15 +235,20 @@ class Critic(nn.Module):
         h = self.concat_linear(torch.cat((state_h, action_h), dim=1))
         return h
 
+
 class SkipFrame(gym.Wrapper):
-    """简单的跳帧封装：同一动作重复 skip 次，奖励累加。"""
+    # 简单的跳帧封装：同一动作重复 skip 次，奖励累加
     def __init__(self, env, skip: int = 5):
         super().__init__(env)
         self.skip = skip
+
     def judge_out_of_route(self, obs):
         s = obs[:84, 6:90, :]
+        s_copy = s.copy()
+        s_copy[75, [41, 42, 52, 53], :] = [255, 0, 0]
         out_sum = (s[75, 35:48, 1][:2] > 200).sum() + (s[75, 35:48, 1][-2:] > 200).sum()
         return out_sum == 4
+
     def step(self, action):
         total_reward = 0.0
         obs = None
@@ -268,8 +273,8 @@ def make_car_env(render_mode=None):
     - 缩放为 84x84 ResizeObservation
     """
     env = gym.make("CarRacing-v3", render_mode=render_mode)
-    env = SkipFrame(env, skip=5)                        # 对应参考代码的 skip=5
-    env = GrayscaleObservation(env, keep_dim=False)     # 变成 (H, W) 灰度
+    env = SkipFrame(env, skip=5)  # 对应参考代码的 skip=5
+    env = GrayscaleObservation(env, keep_dim=False)  # 变成 (H, W) 灰度
     env = ResizeObservation(env, shape=(IMG_SIZE, IMG_SIZE))  # 变成 (84, 84)
     return env
 
@@ -280,12 +285,6 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity)
 
     def add(self, state, action, next_state, reward, done):
-        """
-        state / next_state: torch.Tensor, shape = (4, 84, 84), float32, [0,1]
-        action: np.ndarray 或 list
-        reward: float
-        done: bool
-        """
         # 状态：压缩为 uint8，范围 0~255
         state_np = (state.cpu().numpy() * 255).astype(np.uint8)
         next_state_np = (next_state.cpu().numpy() * 255).astype(np.uint8)
@@ -320,13 +319,10 @@ class ReplayBuffer:
 
 
 class Agent:
-    ### MODIFICATION START: Different learning rates for Actor and Critic ###
     def __init__(self, state_dim: int, action_dim: int, actor_lr: float, critic_lr: float, device="cpu") -> None:
-        ### MODIFICATION END ###
         self.brake_rate = 0
         self.turn_speed_reduction = 0.0
         self.device = device
-
         self.actor = Actor(state_dim, action_dim).to(device)
         self.critic1 = Critic(state_dim, action_dim).to(device)
         self.critic2 = Critic(state_dim, action_dim).to(device)
@@ -336,13 +332,9 @@ class Agent:
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2 = Critic(state_dim, action_dim).to(device)
         self.target_critic2.load_state_dict(self.critic2.state_dict())
-
-        ### MODIFICATION START: Use separate learning rates ###
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=critic_lr)
         self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=critic_lr)
-        ### MODIFICATION END ###
-
         self.critic_mse_loss = nn.MSELoss().to(device)
 
     def select_action(self, state, sigma=0):
@@ -402,12 +394,9 @@ class Agent:
         critic2_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
         self.critic2_optimizer.step()
-
-        ### MODIFICATION START: Use actor_update_freq parameter ###
         # 对齐参考工程：delay_freq = 1（每次都更新 actor）
         actor_update_freq = 1
         if update_time % actor_update_freq == 0:
-            ### MODIFICATION END ###
             predicted_action = self.actor(
                 state,
                 brake_rate=self.brake_rate,
@@ -427,11 +416,8 @@ class Agent:
                 for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
                     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-
-### MODIFICATION START: Simplified reward function for early training ###
 def car_in_road_reward_simplified(image):
-    """Simplified reward: just checks if the car is on the road using a central region."""
-    part_image = image[60:84, 40:60, :]  # Region right under the car
+    part_image = image[60:84, 40:60, :]
     road_color_lower = np.array([90, 90, 90], dtype=np.uint8)
     road_color_upper = np.array([120, 120, 120], dtype=np.uint8)
     grass_color_lower = np.array([90, 180, 90], dtype=np.uint8)
@@ -444,14 +430,9 @@ def car_in_road_reward_simplified(image):
     grass_pixel_count = cv2.countNonZero(grass_mask)
 
     if road_pixel_count + grass_pixel_count == 0:
-        return -0.1  # Small penalty if we can't see road or grass
-
-    # Reward is proportional to road pixels, becomes a penalty if mostly grass
+        return -0.1
     reward = (road_pixel_count) / (road_pixel_count + grass_pixel_count) - 0.5
     return reward
-
-
-### MODIFICATION END ###
 
 def detect_curve_direction(image):
     height, width = image.shape[:2]
@@ -468,31 +449,26 @@ def detect_curve_direction(image):
 
         left_edge_density = np.sum(left_half > 0)
         right_edge_density = np.sum(right_half > 0)
-
         curve_intensity = abs(left_edge_density - right_edge_density) / (
                 left_edge_density + right_edge_density + 1e-6
         )
         return curve_intensity
 
-    near_roi = image[height  // 2:, :, :]# 近处（当前车前路面）：下半部分
-    far_roi = image[:height  // 2 :, :] # 远处弯道：上半部分
+    near_roi = image[height // 2:, :, :]  # 近处（当前车前路面）：下半部分
+    far_roi = image[:height // 2:, :]  # 远处弯道：上半部分
     near_curve = curve_intensity_from_roi(near_roi)
     far_curve = curve_intensity_from_roi(far_roi)
 
     curve_intensity = 0.9 * near_curve + 0.1 * far_curve
     return curve_intensity
 
-
 def curve_speed_control(curve_intensity, current_speed_factor=1.0):
     speed_reduction = min(0.7, curve_intensity * 1.5)
     speed_adjustment = speed_reduction * current_speed_factor
     return speed_adjustment
 
-
 def render_one_episode(agent, transformer, max_episode_steps=1200):
-    """
-    用当前 agent 跑一局可视化（render_mode='human'），不训练，只看效果。
-    """
+    # 用当前 agent 跑一局可视化（render_mode='human'），不训练，只看效果。
     import gymnasium as gym
 
     env_vis = gym.make('CarRacing-v3', render_mode="human")
@@ -507,13 +483,13 @@ def render_one_episode(agent, transformer, max_episode_steps=1200):
         action = agent.select_action(state, sigma=0.0)
         obs, reward, terminated, truncated, info = env_vis.step(action)
         state = transformer(obs)
-
         episode_reward += reward
         done = terminated or truncated
         steps += 1
 
     print(f"[Render] 可视化 episode_reward = {episode_reward:.2f}, steps = {steps}")
     env_vis.close()
+
 
 def record_video_episode(agent, transformer, episode_idx: int,
                          max_episode_steps: int = 1200,
@@ -529,7 +505,7 @@ def record_video_episode(agent, transformer, episode_idx: int,
     env_vis = RecordVideo(
         env_vis,
         video_folder=video_folder,
-        episode_trigger=lambda ep: True,           # 我们只跑一局，录这一局即可
+        episode_trigger=lambda ep: True,  # 我们只跑一局，录这一局即可
         name_prefix=f"car_td3_ep_{episode_idx:06d}"
     )
 
@@ -552,6 +528,7 @@ def record_video_episode(agent, transformer, episode_idx: int,
     env_vis.close()
     print(f"[RecordVideo] episode {episode_idx}: reward={episode_reward:.2f}, "
           f"steps={steps}, saved to '{video_folder}'")
+
 
 def record_eval_video(run_name: str, episode: int, agent, device: str,
                       max_episode_steps: int = 1000):
@@ -576,14 +553,12 @@ def record_eval_video(run_name: str, episode: int, agent, device: str,
 
     obs, info = eval_env.reset()
     first_frame = transformer(obs)  # 灰度 (84,84) -> (1,84,84)
-
     frame_stack.clear()
     for _ in range(FRAME_STACK):
         frame_stack.append(first_frame)
 
     state = torch.cat(list(frame_stack), dim=0)  # (4,84,84)
     total_reward = 0.0
-
     # 评估时一般不加噪声：sigma=0
     for step in range(max_episode_steps):
         action = agent.select_action(state, sigma=0.0)
@@ -597,12 +572,12 @@ def record_eval_video(run_name: str, episode: int, agent, device: str,
         done = terminated or truncated
         if done:
             break
-
     eval_env.close()
     print(
         f"[{run_name}] 评估视频 Episode {episode} 总奖励 = {total_reward:.2f}，"
         f"已保存到 {video_dir}"
     )
+
 
 def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     """
@@ -638,7 +613,6 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     except TypeError:
         # 旧版 gymnasium 可能 reset 不支持 seed 参数，忽略即可
         pass
-
     # 预处理后的观测空间是 (84, 84)，我们用高度作为 state_dim
     obs_shape = env.observation_space.shape  # (84, 84)
     state_dim = obs_shape[0]
@@ -652,8 +626,8 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     num_episodes = 1500
     max_episode_steps = 1200
 
-    replay_capacity = 65536   # 经验回放容量 ~1e5
-    tau = 0.05                 # target 网络软更新系数
+    replay_capacity = 65536  # 经验回放容量 ~1e5
+    tau = 0.05  # target 网络软更新系数
 
     # 探索噪声：expl_noise = 0.5, expl_noise_exp_reduce_factor = 1 - 1e-4
     initial_sigma = 0.5
@@ -676,20 +650,16 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     for episode in range(num_episodes):
         try:
             obs, info = env.reset()
-
             # 第一帧 -> Tensor (1,84,84)
             first_frame = transformer(obs)
             frame_stack.clear()
             for _ in range(FRAME_STACK):
                 frame_stack.append(first_frame)
-
             # 堆叠 4 帧得到状态 (4,84,84)
             state = torch.cat(list(frame_stack), dim=0)
-
             episode_reward = 0.0
             episode_steps = 0
             update_time = 0  # 用于 TD3 的 delay_freq（你在 Agent.train 里已经用到）
-
             # 更新探索强度（指数衰减）
             current_sigma = max(min_sigma, current_sigma * sigma_decay_factor)
             writer.add_scalar('training/sigma', current_sigma, episode)
@@ -703,16 +673,13 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
                 next_frame = transformer(next_obs)
                 frame_stack.append(next_frame)
                 next_state = torch.cat(list(frame_stack), dim=0)
-
                 done = terminated or truncated
                 episode_reward += reward
-
                 # 存入经验回放
                 replay_buffer.add(state, action, next_state, reward, done)
                 if len(replay_buffer) > batch_size:
                     agent.train(replay_buffer, batch_size, gamma, tau, update_time)
                     update_time += 1
-
                 # 记录动作
                 if step % 20 == 0:
                     writer.add_scalar('action/steer', action[0], total_steps)
@@ -831,6 +798,7 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
     env.close()
     writer.close()
 
+
 if __name__ == "__main__":
     device = setup_device()
     print(f"使用设备: {device}")
@@ -840,9 +808,9 @@ if __name__ == "__main__":
     sigma_decay_list = [
         1.0 - 1e-2,  # 0.990  衰减很快
         1.0 - 5e-3,  # 0.995
-        1.0 - 1e-3,   # 0.9990  衰减快
-        1.0 - 5e-4,   # 0.9995
-        1.0 - 1e-4,   # 0.9999  参考工程的默认值
+        1.0 - 1e-3,  # 0.9990  衰减快
+        1.0 - 5e-4,  # 0.9995
+        1.0 - 1e-4,  # 0.9999  参考工程的默认值
         # 1.0 - 5e-5,   # 0.99995
         # 1.0 - 1e-5,   # 0.99999 衰减非常慢
     ]
@@ -856,4 +824,3 @@ if __name__ == "__main__":
         )
         train_one_run(run_idx, device, sigma_decay_factor)
         run_idx += 1
-
