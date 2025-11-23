@@ -26,19 +26,8 @@ def setup_device():
 
 
 class Actor(nn.Module):
-    """
-    预算分配 Actor：
-    - 输出三个 raw 值：steer_raw, speed_gate_raw, brake_ratio_raw
-    - speed_gate = sigmoid(speed_gate_raw)      ∈ [0,1] 代表油门+刹车总预算
-    - brake_ratio = sigmoid(brake_ratio_raw)    ∈ [0,1] 预算中刹车占比
-    - gas   = speed_gate * (1 - brake_ratio)
-    - brake = speed_gate * brake_ratio
-    - steer = tanh(steer_raw)
-    通过结构性分解实现近互斥，仍允许小幅同时存在（柔性过渡）。
-    """
-    def __init__(self, state_dim: int, action_dim: int) -> None:
+    def __init__(self, state_dim, action_dim) -> None:
         super().__init__()
-        # 保持原卷积结构
         self.conv1 = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
@@ -69,19 +58,16 @@ class Actor(nn.Module):
         )
         self.down3 = nn.MaxPool2d(kernel_size=2)
 
-        flat_dim = 16 * (state_dim // 8) ** 2  # 96 -> 下采样三次 -> 12，12*12*16
-        self.fc = nn.Sequential(
-            nn.Linear(flat_dim, 256),
+        self.linear = nn.Sequential(
+            nn.Linear(16 * (state_dim // 8) ** 2, 256),
             nn.LayerNorm(256),
-            nn.Mish()
+            nn.Mish(),
+            nn.Linear(256, action_dim),
+            nn.LayerNorm(action_dim),
+            nn.Tanh()
         )
-        # 输出三个 raw： steer_raw, speed_gate_raw, brake_ratio_raw
-        self.head = nn.Linear(256, 3)
-        # 初始化：鼓励初期速度较高 (speed_gate_raw 正偏置)，刹车较低 (brake_ratio_raw 负偏置)
-        nn.init.zeros_(self.head.weight)
-        self.head.bias.data = torch.tensor([0.0, 1.5, -2.0])
 
-    def forward(self, state: Union[np.ndarray, torch.Tensor, list], sigma=0.0, brake_rate=1.0):
+    def forward(self, state: Union[np.ndarray, torch.Tensor, list], sigma=0, brake_rate=1.0, turn_speed_reduction=0.0):
         if isinstance(state, np.ndarray):
             state = torch.FloatTensor(state)
         elif isinstance(state, list):
@@ -97,26 +83,26 @@ class Actor(nn.Module):
         h = self.conv3(h)
         h = self.down3(h)
         h = torch.flatten(h, start_dim=1)
-        h = self.fc(h)
-        raw = self.head(h)  # (B,3)
 
-        steer_raw      = raw[:, 0]
-        speed_gate_raw = raw[:, 1]
-        brake_ratio_raw= raw[:, 2]
+        h = self.linear(h)
+        h = h + torch.randn_like(h) * sigma
 
-        steer = torch.tanh(steer_raw)                    # [-1,1]
-        speed_gate = torch.sigmoid(speed_gate_raw)       # [0,1]
-        brake_ratio = torch.sigmoid(brake_ratio_raw)     # [0,1]
+        steer = h[:, 0]
+        gas = (h[:, 1] + 1) * 0.5 + 0.1
+        brake = (h[:, 2] + 1) * 0.015
 
-        gas = speed_gate * (1 - brake_ratio)             # [0,1]
-        brake = speed_gate * brake_ratio                 # [0,1]
+        turn_magnitude = torch.abs(steer)
+        gas_reduction = turn_magnitude * turn_speed_reduction
+        gas = gas * (1.0 - gas_reduction)
+        sharp_turn_mask = (turn_magnitude > 0.5).float()
+        brake = brake + sharp_turn_mask * turn_magnitude * 0.1
 
-        if sigma > 0:
-            # 只对转向加噪声，减少油门/刹车抖动
-            steer = steer + torch.randn_like(steer) * sigma * 0.3
-            steer = torch.clamp(steer, -1.0, 1.0)
+        steer = torch.clamp(steer, -1.0, 1.0)
+        gas = torch.clamp(gas, 0.0, 1.0)
+        brake = torch.clamp(brake, 0.0, 1.0)
 
-        return torch.stack([steer, gas, brake], dim=1)
+        result = torch.stack([steer, gas, brake], dim=1)
+        return result
 
 
 class Critic(nn.Module):
@@ -219,15 +205,16 @@ class ReplayBuffer:
 
 
 class Agent:
-    def __init__(self, state_dim: int, action_dim: int,
-                 actor_lr: float, critic_lr: float, device="cpu") -> None:
+    ### MODIFICATION START: Different learning rates for Actor and Critic ###
+    def __init__(self, state_dim: int, action_dim: int, actor_lr: float, critic_lr: float, device="cpu") -> None:
+        ### MODIFICATION END ###
         self.brake_rate = 0
+        self.turn_speed_reduction = 0.0
         self.device = device
 
         self.actor = Actor(state_dim, action_dim).to(device)
         self.critic1 = Critic(state_dim, action_dim).to(device)
         self.critic2 = Critic(state_dim, action_dim).to(device)
-
         self.target_actor = Actor(state_dim, action_dim).to(device)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic1 = Critic(state_dim, action_dim).to(device)
@@ -235,9 +222,11 @@ class Agent:
         self.target_critic2 = Critic(state_dim, action_dim).to(device)
         self.target_critic2.load_state_dict(self.critic2.state_dict())
 
+        ### MODIFICATION START: Use separate learning rates ###
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=critic_lr)
         self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=critic_lr)
+        ### MODIFICATION END ###
 
         self.critic_mse_loss = nn.MSELoss().to(device)
 
@@ -247,14 +236,20 @@ class Agent:
                 state = torch.FloatTensor(state)
             if len(state.shape) == 3:
                 state = state.unsqueeze(0)
-            actions = self.actor(state.to(self.device), sigma=sigma, brake_rate=self.brake_rate)
-            return actions.cpu().numpy()[0]
+            action = self.actor(
+                state.to(self.device),
+                sigma=sigma,
+                brake_rate=self.brake_rate,
+                turn_speed_reduction=self.turn_speed_reduction
+            )
+            return action.cpu().numpy()[0]
 
     def train(self, replay_buffer: ReplayBuffer, batch_size: int, gamma: float, tau: float, update_time=0):
-        sample = replay_buffer.sample(batch_size)
-        if sample is None:
+        sample_result = replay_buffer.sample(batch_size)
+        if sample_result is None:
             return
-        state, action, next_state, reward, done = sample
+
+        state, action, next_state, reward, done = sample_result
         state = state.to(self.device)
         action = action.to(self.device)
         next_state = next_state.to(self.device)
@@ -265,9 +260,14 @@ class Agent:
         predicted_q2 = self.critic2(state, action)
 
         with torch.no_grad():
-            target_action = self.target_actor(next_state, brake_rate=self.brake_rate)
-            target_action = target_action + torch.clamp(0.02 * torch.randn_like(target_action), -0.05, 0.05)
-            target_action = torch.clamp(target_action, -1.0, 1.0)  # steer clamp；gas/brake 原本已在 [0,1]，但统一安全
+            target_action = self.target_actor(
+                next_state,
+                brake_rate=self.brake_rate,
+                turn_speed_reduction=self.turn_speed_reduction
+            )
+            target_action = target_action + torch.clamp(0.02 * torch.randn_like(target_action), -0.05,
+                                                        0.05)  # Clipped noise
+            target_action = torch.clamp(target_action, -1.0, 1.0)
             target_q1 = self.target_critic1(next_state, target_action)
             target_q2 = self.target_critic2(next_state, target_action)
             target_q = torch.min(target_q1, target_q2)
@@ -276,31 +276,37 @@ class Agent:
         critic1_loss = self.critic_mse_loss(predicted_q1, TD_target)
         self.critic1_optimizer.zero_grad()
         critic1_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), max_norm=1.0)
         self.critic1_optimizer.step()
 
         critic2_loss = self.critic_mse_loss(predicted_q2, TD_target)
         self.critic2_optimizer.zero_grad()
         critic2_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
         self.critic2_optimizer.step()
 
-        actor_update_freq = 2
+        ### MODIFICATION START: Use actor_update_freq parameter ###
+        actor_update_freq = 2  # Default TD3 delay
         if update_time % actor_update_freq == 0:
-            predicted_action = self.actor(state, brake_rate=self.brake_rate)
+            ### MODIFICATION END ###
+            predicted_action = self.actor(
+                state,
+                brake_rate=self.brake_rate,
+                turn_speed_reduction=self.turn_speed_reduction
+            )
             actor_loss = -self.critic1(state, predicted_action).mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
             self.actor_optimizer.step()
 
             with torch.no_grad():
-                for p, tp in zip(self.actor.parameters(), self.target_actor.parameters()):
-                    tp.data.copy_(tau * p.data + (1 - tau) * tp.data)
-                for p, tp in zip(self.critic1.parameters(), self.target_critic1.parameters()):
-                    tp.data.copy_(tau * p.data + (1 - tau) * tp.data)
-                for p, tp in zip(self.critic2.parameters(), self.target_critic2.parameters()):
-                    tp.data.copy_(tau * p.data + (1 - tau) * tp.data)
+                for param, target_param in zip(self.actor.parameters(), self.target_actor.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.critic1.parameters(), self.target_critic1.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
 
 ### MODIFICATION START: Simplified reward function for early training ###

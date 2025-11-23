@@ -82,19 +82,8 @@ def setup_device():
 
 
 class Actor(nn.Module):
-    """
-    预算分配 Actor：
-    - 输出三个 raw 值：steer_raw, speed_gate_raw, brake_ratio_raw
-    - speed_gate = sigmoid(speed_gate_raw)      ∈ [0,1] 代表油门+刹车总预算
-    - brake_ratio = sigmoid(brake_ratio_raw)    ∈ [0,1] 预算中刹车占比
-    - gas   = speed_gate * (1 - brake_ratio)
-    - brake = speed_gate * brake_ratio
-    - steer = tanh(steer_raw)
-    通过结构性分解实现近互斥，仍允许小幅同时存在（柔性过渡）。
-    """
-    def __init__(self, state_dim: int, action_dim: int) -> None:
+    def __init__(self, state_dim, action_dim) -> None:
         super().__init__()
-        # 保持原卷积结构
         self.conv1 = nn.Sequential(
             nn.Conv2d(FRAME_STACK, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
@@ -125,19 +114,16 @@ class Actor(nn.Module):
         )
         self.down3 = nn.MaxPool2d(kernel_size=2)
 
-        flat_dim = 16 * (state_dim // 8) ** 2  # 96 -> 下采样三次 -> 12，12*12*16
-        self.fc = nn.Sequential(
-            nn.Linear(flat_dim, 256),
+        self.linear = nn.Sequential(
+            nn.Linear(16 * (state_dim // 8) ** 2, 256),
             nn.LayerNorm(256),
-            nn.Mish()
+            nn.Mish(),
+            nn.Linear(256, action_dim),
+            nn.LayerNorm(action_dim),
+            nn.Tanh()
         )
-        # 输出三个 raw： steer_raw, speed_gate_raw, brake_ratio_raw
-        self.head = nn.Linear(256, 3)
-        # 初始化：鼓励初期速度较高 (speed_gate_raw 正偏置)，刹车较低 (brake_ratio_raw 负偏置)
-        nn.init.zeros_(self.head.weight)
-        self.head.bias.data = torch.tensor([0.0, 1.5, -2.0])
 
-    def forward(self, state: Union[np.ndarray, torch.Tensor, list], sigma=0.0):
+    def forward(self, state: Union[np.ndarray, torch.Tensor, list], sigma=0, brake_rate=1.0, turn_speed_reduction=0.0):
         if isinstance(state, np.ndarray):
             state = torch.FloatTensor(state)
         elif isinstance(state, list):
@@ -153,24 +139,23 @@ class Actor(nn.Module):
         h = self.conv3(h)
         h = self.down3(h)
         h = torch.flatten(h, start_dim=1)
-        h = self.fc(h)
-        raw = self.head(h)  # (B,3)
 
-        steer_raw      = raw[:, 0]
-        speed_gate_raw = raw[:, 1]
-        brake_ratio_raw= raw[:, 2]
+        h = self.linear(h)
+        h = h + torch.randn_like(h) * sigma
 
-        steer = torch.tanh(steer_raw)                    # [-1,1]
-        speed_gate = torch.sigmoid(speed_gate_raw)       # [0,1]
-        brake_ratio = torch.sigmoid(brake_ratio_raw)     # [0,1]
+        steer = h[:, 0]
+        gas = (h[:, 1] + 1) * 0.5 + 0.1
+        brake = (h[:, 2] + 1) * 0.015
 
-        gas = speed_gate * (1 - brake_ratio)             # [0,1]
-        brake = speed_gate * brake_ratio                 # [0,1]
+        turn_magnitude = torch.abs(steer)
+        gas_reduction = turn_magnitude * turn_speed_reduction
+        gas = gas * (1.0 - gas_reduction)
+        sharp_turn_mask = (turn_magnitude > 0.5).float()
+        brake = brake + sharp_turn_mask * turn_magnitude * 0.1
 
-        if sigma > 0:
-            # 只对转向加噪声，减少油门/刹车抖动
-            steer = steer + torch.randn_like(steer) * sigma * 0.3
-            steer = torch.clamp(steer, -1.0, 1.0)
+        steer = torch.clamp(steer, -1.0, 1.0)
+        gas = torch.clamp(gas, 0.0, 1.0)
+        brake = torch.clamp(brake, 0.0, 1.0)
 
         result = torch.stack([steer, gas, brake], dim=1)
         return result
@@ -275,7 +260,7 @@ class SkipFrame(gym.Wrapper):
         return obs, total_reward, terminated, truncated, info
 
 
-def make_car_env(render_mode="human"):
+def make_car_env(render_mode=None):
     """
     构造带预处理的 CarRacing 环境：
     - 跳帧（SkipFrame）
@@ -338,6 +323,8 @@ class Agent:
     ### MODIFICATION START: Different learning rates for Actor and Critic ###
     def __init__(self, state_dim: int, action_dim: int, actor_lr: float, critic_lr: float, device="cpu") -> None:
         ### MODIFICATION END ###
+        self.brake_rate = 0
+        self.turn_speed_reduction = 0.0
         self.device = device
 
         self.actor = Actor(state_dim, action_dim).to(device)
@@ -366,7 +353,9 @@ class Agent:
                 state = state.unsqueeze(0)
             action = self.actor(
                 state.to(self.device),
-                sigma=sigma
+                sigma=sigma,
+                brake_rate=self.brake_rate,
+                turn_speed_reduction=self.turn_speed_reduction
             )
             return action.cpu().numpy()[0]
 
@@ -388,6 +377,8 @@ class Agent:
         with torch.no_grad():
             target_action = self.target_actor(
                 next_state,
+                brake_rate=self.brake_rate,
+                turn_speed_reduction=self.turn_speed_reduction
             )
 
             # 对齐参考工程：policy_noise = 0.2, policy_noise_clip = 0.5
@@ -418,7 +409,9 @@ class Agent:
         if update_time % actor_update_freq == 0:
             ### MODIFICATION END ###
             predicted_action = self.actor(
-                state
+                state,
+                brake_rate=self.brake_rate,
+                turn_speed_reduction=self.turn_speed_reduction
             )
             actor_loss = -self.critic1(state, predicted_action).mean()
             self.actor_optimizer.zero_grad()
@@ -703,6 +696,8 @@ def train_one_run(run_idx: int, device: str, sigma_decay_factor: float):
 
             for step in range(max_episode_steps):
                 # 不额外做手工控制逻辑，交给 TD3 自己学
+                agent.turn_speed_reduction = 0.0
+
                 action = agent.select_action(state, sigma=current_sigma)
                 next_obs, reward, terminated, truncated, info = env.step(action)
                 next_frame = transformer(next_obs)
