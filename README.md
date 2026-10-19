@@ -26,6 +26,8 @@ python -m pip install -e .
 
 The `legacy` scripts additionally need `python -m pip install -e ".[legacy]"`. The exact 2025 package versions were not recorded, so the historical runs are evidence of the course work rather than a verified bit-for-bit reproducible environment. A fresh package lock and environment smoke test should be recorded before citing results from the maintained edition.
 
+After installation, run `python -m unittest discover -s tests -v`. The integration checks load the archived checkpoint, reset CarRacing-v3, step the environment once, and check that the actor updates only after the configured delay. These checks verify basic compatibility; they do not establish a driving score. Tests that require the runtime dependencies are skipped if those packages are not installed.
+
 ## Evaluate the included checkpoint
 
 ```bash
