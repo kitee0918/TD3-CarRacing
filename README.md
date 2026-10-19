@@ -9,7 +9,7 @@ This repository presents the **2025 course work** built on [Yanran Zhang's 2023 
 | `src/td3_carracing/` | Maintained PyTorch Actor, twin Critic, compact replay, CarRacing-v3 wrappers, TD3 updates, training and evaluation |
 | `experiments/raw/` | Original November 2025 CSV exports, kept separate because their schemas differ |
 | `experiments/results_2025_training.csv` | Normalized **training** log with source line and inferred session number |
-| `checkpoints/` | One historical actor snapshot for demonstration; its score has **not** been independently verified |
+| `checkpoints/` | One historical actor snapshot, evaluated independently on five fixed seeds in October 2026 |
 | `legacy/oct_2025/` | Selected local parallel-training and benchmark work from October 29–November 2, 2025 |
 | `legacy/nov_2025/` | Course scripts preserved from the November Git history |
 | `docs/` | Development chronology and the source audit |
@@ -18,13 +18,13 @@ The maintained TD3 implementation includes clipped double Q targets, target poli
 
 ## Install
 
-Use a Python environment with a compatible PyTorch build for your operating system and accelerator. Then, from this repository root:
+Use Python 3.10–3.13 with a compatible PyTorch build for your operating system and accelerator. On Windows, Python 3.11 is the tested installation target. The project uses a prebuilt `Box2D` wheel where available, avoiding a local `box2d-py` compilation. Then, from this repository root:
 
 ```bash
 python -m pip install -e .
 ```
 
-The `legacy` scripts additionally need `python -m pip install -e ".[legacy]"`. The exact 2025 package versions were not recorded, so the historical runs are evidence of the course work rather than a verified bit-for-bit reproducible environment. A fresh package lock and environment smoke test should be recorded before citing results from the maintained edition.
+The `legacy` scripts additionally need `python -m pip install -e ".[legacy]"`. The exact 2025 package versions were not recorded, so the historical runs are evidence of the course work rather than a verified bit-for-bit reproducible environment. The tested 2026 evaluation environment is recorded in [the evaluation report](experiments/EVALUATION_2026.md).
 
 After installation, run `python -m unittest discover -s tests -v`. The integration checks load the archived checkpoint, reset CarRacing-v3, step the environment once, and check that the actor updates only after the configured delay. These checks verify basic compatibility; they do not establish a driving score. Tests that require the runtime dependencies are skipped if those packages are not installed.
 
@@ -37,7 +37,7 @@ td3-carracing-eval \
   --output runs/checkpoint_ep200_eval.csv
 ```
 
-This command uses raw CarRacing-v3 rewards and no exploration noise. The original CSV reused the same run name and checkpoint path across multiple sessions; the exact training row corresponding to the retained checkpoint is uncertain. The command above is the way to establish a new, attributable test score. No test score is claimed in this README.
+This command uses raw CarRacing-v3 rewards and no exploration noise. The original CSV reused the same run name and checkpoint path across multiple sessions; the exact training row corresponding to the retained checkpoint is uncertain. With the five seeds above, the archived checkpoint scored **479.48 mean**, with **526.67 maximum** in the [October 2026 independent evaluation](experiments/EVALUATION_2026.md).
 
 ## Train a new run
 

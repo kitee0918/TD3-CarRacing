@@ -1,0 +1,6 @@
+checkpoint,seed,score,agent_steps,terminated,truncated
+checkpoints/course_2025_actor_ep200.pt,1001,355.1282051281968,200,False,True
+checkpoints/course_2025_actor_ep200.pt,1002,507.27272727271486,200,False,True
+checkpoints/course_2025_actor_ep200.pt,1003,526.6666666666574,200,False,True
+checkpoints/course_2025_actor_ep200.pt,1004,504.0268456375743,200,False,True
+checkpoints/course_2025_actor_ep200.pt,1005,504.2944785276005,200,False,True

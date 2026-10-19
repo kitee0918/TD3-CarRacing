@@ -18,4 +18,6 @@ The normalized file contains **training-only** columns. `session` increments whe
 
 The 2025 scripts recorded TensorBoard training reward and generated evaluation videos, but no complete per-seed independent evaluation table was found. Scores in these CSVs must not be labeled test scores. The retained `checkpoints/course_2025_actor_ep200.pt` came from the committed Gitee branch; because that branch reused the `agent_opt_200.pt` path across sessions, its relation to either row above is ambiguous until evaluated again.
 
+The retained checkpoint was independently evaluated on five fixed seeds in October 2026. See [the evaluation report](EVALUATION_2026.md) and its per-seed CSV. Its mean raw return was **479.48** and its best raw return was **526.67**; this does not verify the historical training high as a test score.
+
 The older `run_baseline`, `run_more_brake`, and `run_less_explore` logs changed brake and exploration settings together. The two decay logs also changed replay capacity. They document the search process, but they are not controlled single-variable comparisons. For new experiments, run several training seeds, hold other hyperparameters fixed, and evaluate each checkpoint on the same separate seed list.

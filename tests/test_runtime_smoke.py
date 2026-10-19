@@ -7,7 +7,7 @@ import unittest
 
 
 HAS_RUNTIME = all(importlib.util.find_spec(name) is not None
-                  for name in ("torch", "gymnasium", "numpy", "Box2D"))
+                  for name in ("torch", "gymnasium", "numpy", "Box2D", "cv2"))
 
 
 @unittest.skipUnless(HAS_RUNTIME, "install the project dependencies for runtime checks")
