@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "td3-carracing-course"
+version = "0.1.0"
+description = "A curated TD3 CarRacing-v3 course project with reproducible evaluation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "gymnasium[box2d]",
+  "numpy",
+  "torch",
+  "tensorboard",
+]
+
+[project.optional-dependencies]
+legacy = ["opencv-python", "torchvision", "matplotlib", "pandas"]
+
+[project.scripts]
+td3-carracing-train = "td3_carracing.train:main"
+td3-carracing-eval = "td3_carracing.evaluate:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
