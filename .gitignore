@@ -6,6 +6,9 @@ __pycache__/
 venv/
 .idea/
 .DS_Store
+dist/
+build/
+*.egg-info/
 
 # Generated training output. One documented historical checkpoint is retained.
 runs/
