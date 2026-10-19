@@ -28,6 +28,8 @@ The `legacy` scripts additionally need `python -m pip install -e ".[legacy]"`. T
 
 After installation, run `python -m unittest discover -s tests -v`. The integration checks load the archived checkpoint, reset CarRacing-v3, step the environment once, and check that the actor updates only after the configured delay. These checks verify basic compatibility; they do not establish a driving score. Tests that require the runtime dependencies are skipped if those packages are not installed.
 
+GitHub Actions runs the same integration checks on Python 3.11 with CPU PyTorch for pushes to `main` and pull requests.
+
 ## Evaluate the included checkpoint
 
 ```bash
